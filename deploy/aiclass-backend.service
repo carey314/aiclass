@@ -1,0 +1,20 @@
+# ============================================
+# AI不难学 - 后端 FastAPI 服务
+# 放到 /etc/systemd/system/aiclass-backend.service
+# ============================================
+
+[Unit]
+Description=AI不难学 Backend (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/aiclass/backend
+Environment="PATH=/opt/aiclass/backend/.venv/bin:/usr/bin"
+ExecStart=/opt/aiclass/backend/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

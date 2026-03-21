@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+.venv/
+
+# Nuxt
+.nuxt/
+.output/
+dist/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Database
+*.db
+
+# Uploads
+uploads/*
+!uploads/.gitkeep
+
+# Environment
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
