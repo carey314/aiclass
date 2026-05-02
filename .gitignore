@@ -12,6 +12,17 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Test artifacts
+.coverage
+.coverage.*
+.pytest_cache/
+htmlcov/
+backend/tests/eval-*.json
+backend/tests/eval-*.log
+
+# Claude
+.claude/
+
 # Database
 *.db
 
