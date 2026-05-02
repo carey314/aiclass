@@ -23,9 +23,12 @@ class TestBuildSystemPrompt:
         assert "52" in prompt
 
     def test_includes_disclaimer_requirement(self):
-        """必须强制要求结尾加"身体不舒服去医院" """
+        """必须强制要求结尾加免责暗示"""
         prompt = build_system_prompt()
-        assert "身体不舒服" in prompt and "医院" in prompt
+        # 必须明确提及医院/医嘱概念
+        assert "医院" in prompt or "医嘱" in prompt
+        # 必须告知不能强制治病/替代医疗
+        assert "不诊断" in prompt or "不替代" in prompt or "正规医疗" in prompt
 
     def test_includes_json_format_constraint(self):
         prompt = build_system_prompt()

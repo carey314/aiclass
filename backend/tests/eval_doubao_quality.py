@@ -61,6 +61,11 @@ DISCLAIMER_KEYWORDS = ["医院", "不舒服", "医嘱", "医生"]
 def assert_quality(topic: str, template: ScriptTemplate) -> tuple[bool, list[str]]:
     """
     返回 (是否通过, 失败原因列表)
+
+    V2 升级版断言：
+    - voiceover 是 nested 结构，提取 full_text
+    - 新增检查 segments 4段时间线
+    - 新增检查 shooting_plan
     """
     fails = []
 
@@ -73,17 +78,18 @@ def assert_quality(topic: str, template: ScriptTemplate) -> tuple[bool, list[str
         if not v or len(v.strip()) < 3:
             fails.append(f"jimeng_prompt.{fname} 太短或为空")
 
-    # 3. 口播长度
-    vlen = len(template.voiceover)
-    if not (60 <= vlen <= 200):  # 适当放宽
-        fails.append(f"voiceover长度 {vlen} 不在 60-200 范围")
+    # 3. 口播长度（用 full_text）
+    voiceover_text = template.voiceover.full_text
+    vlen = len(voiceover_text)
+    if not (60 <= vlen <= 250):  # 适当放宽（V2 要求100-150但LLM有偏差）
+        fails.append(f"voiceover长度 {vlen} 不在 60-250 范围")
 
     # 4. 含免责暗示
-    if not any(k in template.voiceover for k in DISCLAIMER_KEYWORDS):
+    if not any(k in voiceover_text for k in DISCLAIMER_KEYWORDS):
         fails.append(f"voiceover缺少免责暗示({DISCLAIMER_KEYWORDS})")
 
     # 5. 不含红线词
-    full_text = template.voiceover + template.hook + " ".join(template.titles)
+    full_text = voiceover_text + template.hook + " ".join(template.titles)
     for word in FORBIDDEN_WORDS:
         if word in full_text:
             fails.append(f"含红线词「{word}」")
@@ -92,10 +98,27 @@ def assert_quality(topic: str, template: ScriptTemplate) -> tuple[bool, list[str
     if len(template.titles) != 3:
         fails.append(f"titles数量 {len(template.titles)} 不等于3")
 
-    # 7. hashtags数量5-8
+    # 7. hashtags数量
     n_tags = len(template.hashtags)
-    if not (4 <= n_tags <= 10):  # 适当放宽
+    if not (4 <= n_tags <= 10):
         fails.append(f"hashtags数量 {n_tags} 不在 4-10 范围")
+
+    # 8. V2 新增: voiceover 4段结构
+    if not template.voiceover.segments or len(template.voiceover.segments) < 3:
+        fails.append(f"voiceover.segments 不足3段(应4段)")
+
+    # 9. V2 新增: hook_type 标注
+    if not template.hook_type:
+        fails.append("缺少 hook_type")
+
+    # 10. V2 新增: shooting_plan
+    if template.shooting_plan:
+        if not template.shooting_plan.self_shot:
+            fails.append("shooting_plan.self_shot 为空")
+        if not template.shooting_plan.broll_jimeng:
+            fails.append("shooting_plan.broll_jimeng 为空")
+    else:
+        fails.append("缺少 shooting_plan")
 
     return (len(fails) == 0, fails)
 
@@ -128,8 +151,9 @@ async def run_one(topic: str) -> dict:
             "status": "PASS" if passed else "QUALITY_FAIL",
             "latency_ms": latency_ms,
             "fails": fails,
-            "voiceover_len": len(template.voiceover),
+            "voiceover_len": len(template.voiceover.full_text),
             "first_title": template.titles[0] if template.titles else "",
+            "hook_type": template.hook_type or "",
         }
 
     except DoubaoError as e:

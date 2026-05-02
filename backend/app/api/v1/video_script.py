@@ -49,10 +49,24 @@ from app.services.prompt_builder import (
     build_system_prompt,
     build_user_prompt,
     strip_markdown_codeblock,
+    QUICK_TOPICS,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/video_script", tags=["视频脚本生成器"])
+
+
+# ============================================================
+# GET /quick_topics — 快捷主题列表（首页展示，无需鉴权）
+# ============================================================
+@router.get("/quick_topics")
+async def quick_topics():
+    """
+    返回鞠姐讲健康常用的快捷主题（祛湿/补气血/失眠等）。
+    前端在主页面展示成按钮，点击直接填入主题输入框。
+    无需认证，所有人都能看到。
+    """
+    return {"topics": QUICK_TOPICS}
 
 
 # ============================================================

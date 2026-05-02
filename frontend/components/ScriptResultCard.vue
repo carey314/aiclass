@@ -1,13 +1,16 @@
 <script setup lang="ts">
 /**
- * ScriptResultCard — 脚本结果展示卡片
+ * ScriptResultCard V2 — 脚本结果展示卡片
  *
- * 接收已经解析好的 ScriptTemplate，展示成可读+可复制的UI。
- * 每个模块（标题/钩子/口播/即梦提示词等）都有独立"复制"按钮。
+ * 升级：
+ * - 支持4段时间线口播（钩子/痛点/方案/CTA）每段独立展示+复制
+ * - 支持shooting_plan：鞠姐自拍指南 vs 即梦B-roll
+ * - 支持jimeng_prompt.summary（一段直接复制版）
+ * - 高亮hook_type让用户看到用了哪种钩子套路
  *
- * 移动端优先：大字体、大按钮、明显的复制反馈。
+ * 兼容：可解析V1旧格式（voiceover为string）
  */
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import type { ScriptTemplate } from '~/composables/useVideoScript'
 
 const props = defineProps<{
@@ -15,7 +18,6 @@ const props = defineProps<{
   meta?: { generation_ms?: number; created_at?: string }
 }>()
 
-// 每个区域的复制状态（用 key 作 map 的key）
 const copiedKey = ref<string>('')
 
 const copyText = async (text: string, key: string) => {
@@ -26,7 +28,6 @@ const copyText = async (text: string, key: string) => {
       if (copiedKey.value === key) copiedKey.value = ''
     }, 2000)
   } catch (e) {
-    // 降级到 fallback
     const ta = document.createElement('textarea')
     ta.value = text
     document.body.appendChild(ta)
@@ -43,8 +44,27 @@ const copyText = async (text: string, key: string) => {
   }
 }
 
+// 兼容V1: voiceover可能是string，V2是object
+const voiceoverFullText = computed(() => {
+  const v = props.template.voiceover
+  if (typeof v === 'string') return v
+  return v?.full_text || ''
+})
+
+const voiceoverSegments = computed(() => {
+  const v = props.template.voiceover
+  if (typeof v === 'string') return []
+  return v?.segments || []
+})
+
+const totalDuration = computed(
+  () => props.template.estimated_total_duration || props.template.estimated_duration || ''
+)
+
 const formatJimengPrompt = () => {
   const j = props.template.jimeng_prompt
+  // 优先使用summary（V2新增），否则拼接6段
+  if (j.summary && j.summary.trim().length > 10) return j.summary
   return [
     `[主体] ${j.subject}`,
     `[场景] ${j.scene}`,
@@ -57,43 +77,86 @@ const formatJimengPrompt = () => {
 
 const copyAll = () => {
   const t = props.template
-  const text = [
+  const lines = [
     `📌 主题：${t.topic}`,
     '',
-    `【标题（3选1）】`,
+    `【3个候选标题】`,
     ...t.titles.map((s, i) => `${i + 1}. ${s}`),
     '',
-    `【开场钩子】`,
+    `【开场钩子】(${t.hook_type || ''})`,
     t.hook,
     '',
-    `【口播文案】（${t.estimated_duration}）`,
-    t.voiceover,
+    `【口播文案】(${totalDuration.value})`,
+    voiceoverFullText.value,
     '',
-    `【即梦提示词】`,
-    formatJimengPrompt(),
-    '',
-    `【参考图建议】`,
-    t.reference_image_guide,
-    '',
-    `【话题标签】`,
-    t.hashtags.join(' '),
-    '',
-    `【拍摄小技巧】`,
-    t.shooting_tips,
-  ].join('\n')
-  copyText(text, 'all')
+  ]
+
+  if (voiceoverSegments.value.length > 0) {
+    lines.push('【分段时间线】')
+    voiceoverSegments.value.forEach((seg) => {
+      lines.push(`${seg.time} | ${seg.label}`)
+      lines.push(seg.text)
+      lines.push('')
+    })
+  }
+
+  if (t.shooting_plan?.self_shot && t.shooting_plan.self_shot.length > 0) {
+    lines.push('【鞠姐自拍镜头】')
+    t.shooting_plan.self_shot.forEach((s) => lines.push(`- ${s}`))
+    lines.push('')
+  }
+
+  lines.push(`【即梦提示词】`)
+  lines.push(formatJimengPrompt())
+  lines.push('')
+
+  if (t.shooting_plan?.broll_jimeng && t.shooting_plan.broll_jimeng.length > 0) {
+    lines.push('【B-roll时间线】')
+    t.shooting_plan.broll_jimeng.forEach((b) => lines.push(`${b.time}: ${b.scene}`))
+    lines.push('')
+  }
+
+  lines.push(`【参考图建议】`)
+  lines.push(t.reference_image_guide)
+  lines.push('')
+
+  lines.push(`【话题标签】`)
+  lines.push(t.hashtags.join(' '))
+  lines.push('')
+
+  if (t.shooting_tips) {
+    lines.push(`【拍摄小技巧】`)
+    if (Array.isArray(t.shooting_tips)) {
+      t.shooting_tips.forEach((tip) => lines.push(`- ${tip}`))
+    } else {
+      lines.push(t.shooting_tips)
+    }
+  }
+
+  copyText(lines.join('\n'), 'all')
 }
+
+const hookTypeBadge = computed(() => {
+  const map: Record<string, { color: string; emoji: string }> = {
+    反常识: { color: 'bg-purple-100 text-purple-700', emoji: '🤯' },
+    纠错: { color: 'bg-red-100 text-red-700', emoji: '❌' },
+    痛点暴击: { color: 'bg-orange-100 text-orange-700', emoji: '😖' },
+    数字冲击: { color: 'bg-blue-100 text-blue-700', emoji: '📊' },
+  }
+  return map[props.template.hook_type || ''] || { color: 'bg-gray-100 text-gray-700', emoji: '🎯' }
+})
 </script>
 
 <template>
   <div class="bg-white rounded-xl shadow-md p-5 space-y-5">
-    <!-- 头部：主题 + 一键全复制 -->
+    <!-- 头部 -->
     <div class="flex items-start justify-between gap-3 pb-3 border-b">
       <div class="flex-1">
         <div class="text-xs text-gray-400">主题</div>
         <div class="text-lg font-bold text-gray-900">{{ template.topic }}</div>
         <div v-if="meta?.generation_ms" class="text-xs text-gray-400 mt-1">
           生成耗时 {{ Math.round(meta.generation_ms / 1000) }} 秒
+          <span v-if="totalDuration"> · 视频时长 {{ totalDuration }}</span>
         </div>
       </div>
       <button
@@ -101,15 +164,13 @@ const copyAll = () => {
         :class="copiedKey === 'all' ? 'bg-green-500' : 'bg-orange-500 active:scale-95'"
         @click="copyAll"
       >
-        {{ copiedKey === 'all' ? '已复制 ✓' : '复制全部' }}
+        {{ copiedKey === 'all' ? '已复制 ✓' : '一键复制' }}
       </button>
     </div>
 
-    <!-- 候选标题（3选1） -->
+    <!-- 候选标题 -->
     <section>
-      <div class="flex items-center justify-between mb-2">
-        <h3 class="text-base font-bold text-gray-900">📝 标题（3选1）</h3>
-      </div>
+      <h3 class="text-base font-bold text-gray-900 mb-2">📝 标题（3选1）</h3>
       <ul class="space-y-2">
         <li
           v-for="(title, i) in template.titles"
@@ -135,7 +196,16 @@ const copyAll = () => {
     <!-- 开场钩子 -->
     <section>
       <div class="flex items-center justify-between mb-2">
-        <h3 class="text-base font-bold text-gray-900">🎯 开场钩子（前5秒）</h3>
+        <h3 class="text-base font-bold text-gray-900 flex items-center gap-2">
+          🎯 开场钩子（前3秒）
+          <span
+            v-if="template.hook_type"
+            class="text-xs px-2 py-0.5 rounded-full font-normal"
+            :class="hookTypeBadge.color"
+          >
+            {{ hookTypeBadge.emoji }} {{ template.hook_type }}
+          </span>
+        </h3>
         <button
           class="text-sm px-3 py-1 rounded font-medium transition-colors"
           :class="
@@ -148,16 +218,16 @@ const copyAll = () => {
           {{ copiedKey === 'hook' ? '已复制' : '复制' }}
         </button>
       </div>
-      <p class="bg-yellow-50 rounded-lg px-3 py-2 text-base leading-relaxed">
+      <p class="bg-yellow-50 rounded-lg px-3 py-3 text-base leading-relaxed font-medium">
         {{ template.hook }}
       </p>
     </section>
 
-    <!-- 口播文案 -->
+    <!-- 口播文案（V2: 4段时间线） -->
     <section>
       <div class="flex items-center justify-between mb-2">
         <h3 class="text-base font-bold text-gray-900">
-          🎤 口播文案（{{ template.estimated_duration }}）
+          🎤 口播文案（{{ totalDuration || '约35秒' }}）
         </h3>
         <button
           class="text-sm px-3 py-1 rounded font-medium transition-colors"
@@ -166,17 +236,58 @@ const copyAll = () => {
               ? 'bg-green-500 text-white'
               : 'bg-orange-500 text-white active:bg-orange-600'
           "
-          @click="copyText(template.voiceover, 'voiceover')"
+          @click="copyText(voiceoverFullText, 'voiceover')"
         >
-          {{ copiedKey === 'voiceover' ? '已复制' : '复制' }}
+          {{ copiedKey === 'voiceover' ? '已复制' : '复制全部' }}
         </button>
       </div>
-      <p class="bg-blue-50 rounded-lg px-3 py-3 text-base leading-relaxed">
-        {{ template.voiceover }}
+
+      <!-- 分段时间线 -->
+      <div v-if="voiceoverSegments.length > 0" class="space-y-2">
+        <div
+          v-for="(seg, i) in voiceoverSegments"
+          :key="i"
+          class="bg-blue-50 rounded-lg p-3"
+        >
+          <div class="flex items-center justify-between mb-1">
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-bold text-blue-700 bg-white px-2 py-0.5 rounded">{{ seg.time }}</span>
+              <span class="text-sm font-medium text-blue-800">{{ seg.label }}</span>
+            </div>
+            <button
+              class="text-xs px-2 py-1 rounded font-medium transition-colors"
+              :class="
+                copiedKey === `seg-${i}`
+                  ? 'bg-green-500 text-white'
+                  : 'bg-blue-500 text-white active:bg-blue-600'
+              "
+              @click="copyText(seg.text, `seg-${i}`)"
+            >
+              {{ copiedKey === `seg-${i}` ? '✓' : '复制' }}
+            </button>
+          </div>
+          <p class="text-base text-gray-800 leading-relaxed">{{ seg.text }}</p>
+        </div>
+      </div>
+
+      <!-- 兼容V1: 单段口播 -->
+      <p v-else class="bg-blue-50 rounded-lg px-3 py-3 text-base leading-relaxed">
+        {{ voiceoverFullText }}
       </p>
     </section>
 
-    <!-- 即梦提示词（最关键！） -->
+    <!-- 鞠姐自拍指南（V2新增） -->
+    <section v-if="template.shooting_plan?.self_shot && template.shooting_plan.self_shot.length > 0">
+      <h3 class="text-base font-bold text-gray-900 mb-2">📱 鞠姐自拍镜头指南</h3>
+      <ul class="bg-pink-50 rounded-lg px-3 py-3 space-y-1 text-sm text-gray-800">
+        <li v-for="(s, i) in template.shooting_plan.self_shot" :key="i" class="flex gap-2">
+          <span class="text-pink-500">→</span>
+          <span>{{ s }}</span>
+        </li>
+      </ul>
+    </section>
+
+    <!-- 即梦提示词 -->
     <section>
       <div class="flex items-center justify-between mb-2">
         <h3 class="text-base font-bold text-gray-900">🎬 即梦提示词（粘贴到即梦）</h3>
@@ -192,44 +303,68 @@ const copyAll = () => {
           {{ copiedKey === 'jimeng' ? '已复制' : '复制' }}
         </button>
       </div>
-      <div class="bg-purple-50 rounded-lg px-3 py-3 space-y-2">
-        <div class="flex">
-          <span class="font-bold text-purple-700 w-12 shrink-0">主体</span>
-          <span class="text-gray-800">{{ template.jimeng_prompt.subject }}</span>
-        </div>
-        <div class="flex">
-          <span class="font-bold text-purple-700 w-12 shrink-0">场景</span>
-          <span class="text-gray-800">{{ template.jimeng_prompt.scene }}</span>
-        </div>
-        <div class="flex">
-          <span class="font-bold text-purple-700 w-12 shrink-0">运动</span>
-          <span class="text-gray-800">{{ template.jimeng_prompt.motion }}</span>
-        </div>
-        <div class="flex">
-          <span class="font-bold text-purple-700 w-12 shrink-0">镜头</span>
-          <span class="text-gray-800">{{ template.jimeng_prompt.camera }}</span>
-        </div>
-        <div class="flex">
-          <span class="font-bold text-purple-700 w-12 shrink-0">氛围</span>
-          <span class="text-gray-800">{{ template.jimeng_prompt.mood }}</span>
-        </div>
-        <div class="flex">
-          <span class="font-bold text-purple-700 w-12 shrink-0">风格</span>
-          <span class="text-gray-800">{{ template.jimeng_prompt.style }}</span>
-        </div>
+
+      <!-- summary版本（如果有，优先显示） -->
+      <div v-if="template.jimeng_prompt.summary && template.jimeng_prompt.summary.length > 10"
+           class="bg-purple-50 rounded-lg px-3 py-3">
+        <pre class="text-sm text-gray-800 whitespace-pre-wrap font-sans leading-relaxed">{{ template.jimeng_prompt.summary }}</pre>
       </div>
+
+      <!-- 6段详细 -->
+      <details class="bg-purple-50 rounded-lg px-3 py-3 mt-2">
+        <summary class="cursor-pointer text-sm text-purple-700 font-medium">
+          {{ template.jimeng_prompt.summary ? '查看6段详细版' : '展开6段提示词' }}
+        </summary>
+        <div class="mt-3 space-y-2">
+          <div class="flex">
+            <span class="font-bold text-purple-700 w-12 shrink-0 text-sm">主体</span>
+            <span class="text-sm text-gray-800">{{ template.jimeng_prompt.subject }}</span>
+          </div>
+          <div class="flex">
+            <span class="font-bold text-purple-700 w-12 shrink-0 text-sm">场景</span>
+            <span class="text-sm text-gray-800">{{ template.jimeng_prompt.scene }}</span>
+          </div>
+          <div class="flex">
+            <span class="font-bold text-purple-700 w-12 shrink-0 text-sm">运动</span>
+            <span class="text-sm text-gray-800">{{ template.jimeng_prompt.motion }}</span>
+          </div>
+          <div class="flex">
+            <span class="font-bold text-purple-700 w-12 shrink-0 text-sm">镜头</span>
+            <span class="text-sm text-gray-800">{{ template.jimeng_prompt.camera }}</span>
+          </div>
+          <div class="flex">
+            <span class="font-bold text-purple-700 w-12 shrink-0 text-sm">氛围</span>
+            <span class="text-sm text-gray-800">{{ template.jimeng_prompt.mood }}</span>
+          </div>
+          <div class="flex">
+            <span class="font-bold text-purple-700 w-12 shrink-0 text-sm">风格</span>
+            <span class="text-sm text-gray-800">{{ template.jimeng_prompt.style }}</span>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <!-- B-roll时间线（V2新增） -->
+    <section v-if="template.shooting_plan?.broll_jimeng && template.shooting_plan.broll_jimeng.length > 0">
+      <h3 class="text-base font-bold text-gray-900 mb-2">⏱ B-roll时间线（即梦分段）</h3>
+      <ul class="bg-green-50 rounded-lg px-3 py-3 space-y-2 text-sm">
+        <li v-for="(b, i) in template.shooting_plan.broll_jimeng" :key="i" class="flex gap-2">
+          <span class="font-bold text-green-700 shrink-0 w-16">{{ b.time }}</span>
+          <span class="text-gray-800">{{ b.scene }}</span>
+        </li>
+      </ul>
     </section>
 
     <!-- 参考图建议 -->
-    <section>
-      <h3 class="text-base font-bold text-gray-900 mb-2">📷 参考图建议</h3>
-      <p class="bg-green-50 rounded-lg px-3 py-2 text-base">
+    <section v-if="template.reference_image_guide">
+      <h3 class="text-base font-bold text-gray-900 mb-2">📷 拍摄前准备</h3>
+      <p class="bg-amber-50 rounded-lg px-3 py-2 text-sm">
         {{ template.reference_image_guide }}
       </p>
     </section>
 
     <!-- 话题标签 -->
-    <section>
+    <section v-if="template.hashtags && template.hashtags.length > 0">
       <div class="flex items-center justify-between mb-2">
         <h3 class="text-base font-bold text-gray-900"># 话题标签</h3>
         <button
@@ -256,9 +391,15 @@ const copyAll = () => {
     </section>
 
     <!-- 拍摄小技巧 -->
-    <section v-if="template.shooting_tips">
+    <section v-if="template.shooting_tips && (Array.isArray(template.shooting_tips) ? template.shooting_tips.length > 0 : template.shooting_tips)">
       <h3 class="text-base font-bold text-gray-900 mb-2">💡 拍摄小技巧</h3>
-      <p class="bg-amber-50 rounded-lg px-3 py-2 text-base text-gray-700">
+      <ul v-if="Array.isArray(template.shooting_tips)" class="bg-amber-50 rounded-lg px-3 py-3 space-y-1 text-sm text-gray-700">
+        <li v-for="(tip, i) in template.shooting_tips" :key="i" class="flex gap-2">
+          <span>•</span>
+          <span>{{ tip }}</span>
+        </li>
+      </ul>
+      <p v-else class="bg-amber-50 rounded-lg px-3 py-2 text-sm text-gray-700">
         {{ template.shooting_tips }}
       </p>
     </section>

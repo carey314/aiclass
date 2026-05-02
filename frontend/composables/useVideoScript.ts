@@ -15,6 +15,7 @@
  */
 
 export interface JimengPrompt {
+  summary?: string
   subject: string
   scene: string
   motion: string
@@ -23,16 +24,46 @@ export interface JimengPrompt {
   style: string
 }
 
+export interface VoiceoverSegment {
+  time: string
+  label: string
+  text: string
+}
+
+export interface Voiceover {
+  full_text: string
+  segments?: VoiceoverSegment[]
+}
+
+export interface BrollSegment {
+  time: string
+  scene: string
+}
+
+export interface ShootingPlan {
+  self_shot?: string[]
+  broll_jimeng?: BrollSegment[]
+}
+
 export interface ScriptTemplate {
   topic: string
   titles: string[]
   hook: string
-  voiceover: string
-  estimated_duration: string
+  hook_type?: string
+  voiceover: Voiceover | string  // 兼容V1的string格式
+  shooting_plan?: ShootingPlan
+  estimated_duration?: string
+  estimated_total_duration?: string
   jimeng_prompt: JimengPrompt
   reference_image_guide: string
   hashtags: string[]
-  shooting_tips: string
+  shooting_tips: string[] | string
+}
+
+export interface QuickTopic {
+  emoji: string
+  label: string
+  topic: string
 }
 
 export interface VideoScriptListItem {
@@ -202,11 +233,19 @@ export const useVideoScript = () => {
     })
   }
 
+  /**
+   * 快捷主题（首页用，无需鉴权）
+   */
+  const fetchQuickTopics = async (): Promise<{ topics: QuickTopic[] }> => {
+    return await $fetch<{ topics: QuickTopic[] }>(`${baseURL}/video_script/quick_topics`)
+  }
+
   return {
     transcribe,
     generateStream,
     fetchHistory,
     fetchDetail,
     deleteScript,
+    fetchQuickTopics,
   }
 }

@@ -1,13 +1,11 @@
 """
 VideoScript Pydantic schemas — 输入/输出数据结构
 
-设计要点:
-- 输入: 主题字符串(必填)
-- 输出: 严格JSON结构，与豆包返回的JSON保持一致
-- 历史: 列表/详情/删除的响应
-
-为什么严格schema?
-LLM输出有时会少字段，Pydantic会捕获并触发重试，避免脏数据持久化。
+V2 升级：
+- 增加 voiceover.segments（4段时间线分镜）
+- 增加 shooting_plan（鞠姐自拍 vs 即梦B-roll 分离）
+- 增加 jimeng_prompt.summary（一段直接复制的总结版）
+- hook_type 标注（让用户知道用了哪种钩子）
 """
 from datetime import datetime
 from typing import Optional
@@ -15,30 +13,62 @@ from pydantic import BaseModel, Field
 
 
 # ============================================================
-# 即梦提示词 6段结构
+# 口播分段（按时间线）
+# ============================================================
+class VoiceoverSegment(BaseModel):
+    time: str = Field(..., description="如 '0-3秒'")
+    label: str = Field(..., description="如 '钩子'/'痛点放大'/'解决方案'/'互动+免责'")
+    text: str = Field(..., description="该段文案")
+
+
+class Voiceover(BaseModel):
+    full_text: str = Field(..., description="完整口播稿（合并版）")
+    segments: list[VoiceoverSegment] = Field(default_factory=list, description="4段分时间线版")
+
+
+# ============================================================
+# 拍摄计划（自拍 + B-roll）
+# ============================================================
+class BrollSegment(BaseModel):
+    time: str = Field(..., description="如 '5-10秒'")
+    scene: str = Field(..., description="即梦B-roll场景描述（不含人脸）")
+
+
+class ShootingPlan(BaseModel):
+    self_shot: list[str] = Field(default_factory=list, description="鞠姐自拍部分的拍摄建议")
+    broll_jimeng: list[BrollSegment] = Field(default_factory=list, description="即梦B-roll时间线")
+
+
+# ============================================================
+# 即梦提示词 6段结构（V2: 加summary）
 # ============================================================
 class JimengPrompt(BaseModel):
-    subject: str = Field(..., description="人物：50+岁女性外貌+服装")
+    summary: str = Field("", description="一段总结版，可直接复制粘贴到即梦")
+    subject: str = Field(..., description="主体：食材/物品/部位（不含人物全身/脸）")
     scene: str = Field(..., description="场景：环境+时间+氛围")
-    motion: str = Field(..., description="运动：人物动作+食材操作")
-    camera: str = Field(..., description="镜头：景别+运镜")
+    motion: str = Field(..., description="运动：食材动作/手部操作")
+    camera: str = Field(..., description="镜头：景别+运镜（按时间线写更佳）")
     mood: str = Field(..., description="氛围：色调+光影")
-    style: str = Field(..., description="风格关键词")
+    style: str = Field(..., description="风格：写实摄影风/电影感纪录片")
 
 
 # ============================================================
-# 完整的视频脚本模板
+# 完整的视频脚本模板（V2）
 # ============================================================
 class ScriptTemplate(BaseModel):
     topic: str
     titles: list[str] = Field(..., min_length=1, max_length=5)
     hook: str
-    voiceover: str
-    estimated_duration: str
+    hook_type: Optional[str] = Field(default="", description="反常识/纠错/痛点暴击/数字冲击")
+    voiceover: Voiceover
+    shooting_plan: Optional[ShootingPlan] = None
     jimeng_prompt: JimengPrompt
-    reference_image_guide: str
+    reference_image_guide: str = ""
     hashtags: list[str] = Field(default_factory=list)
-    shooting_tips: str = ""
+    shooting_tips: list[str] | str = Field(default_factory=list)
+    estimated_total_duration: Optional[str] = Field(default="", alias="estimated_duration")
+    # 兼容V1: estimated_duration 也接受
+    model_config = {"populate_by_name": True, "extra": "ignore"}
 
 
 # ============================================================
@@ -84,3 +114,8 @@ class VideoScriptListResponse(BaseModel):
     total: int
     page: int = 1
     page_size: int = 20
+
+
+class QuickTopicsResponse(BaseModel):
+    """快捷主题列表（首页展示）"""
+    topics: list[dict]

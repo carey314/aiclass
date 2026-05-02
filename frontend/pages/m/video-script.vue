@@ -1,39 +1,37 @@
 <script setup lang="ts">
 /**
- * 移动端：即梦AI视频脚本生成器
+ * 移动端：即梦AI视频脚本生成器 (V2)
  *
- * 状态机：
- *   idle → input → generating → result
- *                       ↓
- *                     error → input
- *
- * 用户流程：
- *   按住说话/手输 → 主题输入框 → 点"生成脚本"
- *   → 流式接收 → 实时预览 → 完成 → 展示完整结果 + 复制
+ * V2 增强：
+ * - 快捷主题按钮（鞠姐不用思考主题）
+ * - 等待动画 + 进度暗示文案（缓解42秒等待焦虑）
+ * - 自动登录跳转
+ * - 流式预览更友好（动态显示"正在写xx"）
  */
 import { ref, onMounted, computed } from 'vue'
-import type { ScriptTemplate } from '~/composables/useVideoScript'
+import type { ScriptTemplate, QuickTopic } from '~/composables/useVideoScript'
 
 definePageMeta({
-  layout: false,  // 不用默认layout，全屏
+  layout: false,
 })
 
 const auth = useAuthStore()
-const { generateStream, fetchHistory, deleteScript } = useVideoScript()
+const { generateStream, fetchHistory, deleteScript, fetchQuickTopics } = useVideoScript()
 
 // 状态
 type Phase = 'input' | 'generating' | 'result' | 'error'
 const phase = ref<Phase>('input')
 const topicInput = ref('')
 const errorMessage = ref('')
-const isInputFocused = ref(false)
 
 // 流式生成中
 const streamingText = ref('')
 const generationStartTime = ref(0)
 const generationDoneId = ref<number | null>(null)
 const generationDoneMs = ref(0)
+const elapsedSeconds = ref(0)
 let abortFn: (() => void) | null = null
+let elapsedTimer: ReturnType<typeof setInterval> | null = null
 
 // 解析后的最终结果
 const finalTemplate = ref<ScriptTemplate | null>(null)
@@ -43,12 +41,40 @@ const showHistory = ref(false)
 const historyItems = ref<{ id: number; topic: string; created_at: string }[]>([])
 const historyLoading = ref(false)
 
+// 快捷主题
+const quickTopics = ref<QuickTopic[]>([])
+
+// 等待阶段提示文案（按秒数变化，让用户觉得有进度）
+const waitingMessages = [
+  { from: 0, to: 3, text: '正在和AI打招呼...' },
+  { from: 3, to: 8, text: '🎯 正在想3个爆款标题...' },
+  { from: 8, to: 15, text: '🪝 正在写开场钩子（前3秒最关键）...' },
+  { from: 15, to: 25, text: '🎤 正在写口播文案（按4段结构）...' },
+  { from: 25, to: 38, text: '🎬 正在写即梦提示词...' },
+  { from: 38, to: 55, text: '✨ 快好了，最后再润色一下...' },
+  { from: 55, to: 9999, text: '🐢 AI想得有点深，再等等...' },
+]
+
+const currentWaitingMsg = computed(() => {
+  const sec = elapsedSeconds.value
+  const msg = waitingMessages.find((m) => sec >= m.from && sec < m.to)
+  return msg?.text || '生成中...'
+})
+
 // 检查登录
 onMounted(async () => {
   await auth.init()
   if (!auth.isAuthenticated) {
     navigateTo('/admin/login?redirect=/m/video-script')
     return
+  }
+  // 加载快捷主题
+  try {
+    const res = await fetchQuickTopics()
+    quickTopics.value = res.topics
+  } catch (e) {
+    // 静默失败：没有快捷主题不影响主功能
+    console.warn('快捷主题加载失败', e)
   }
 })
 
@@ -60,6 +86,16 @@ const handleTranscribed = (text: string) => {
 
 const handleVoiceError = (msg: string) => {
   errorMessage.value = msg
+}
+
+// 选择快捷主题
+const selectQuickTopic = (qt: QuickTopic) => {
+  topicInput.value = qt.topic
+  errorMessage.value = ''
+  // 自动滚动到生成按钮
+  setTimeout(() => {
+    document.querySelector('#generate-btn')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, 50)
 }
 
 // 启动生成
@@ -79,7 +115,14 @@ const startGenerate = () => {
   finalTemplate.value = null
   generationStartTime.value = Date.now()
   generationDoneId.value = null
+  elapsedSeconds.value = 0
   phase.value = 'generating'
+
+  // 启动计时器
+  if (elapsedTimer) clearInterval(elapsedTimer)
+  elapsedTimer = setInterval(() => {
+    elapsedSeconds.value = Math.floor((Date.now() - generationStartTime.value) / 1000)
+  }, 500)
 
   const { abort } = generateStream(topic, {
     onChunk: (_chunk, accumulated) => {
@@ -88,19 +131,29 @@ const startGenerate = () => {
     onDone: (id, ms) => {
       generationDoneId.value = id
       generationDoneMs.value = ms
+      if (elapsedTimer) {
+        clearInterval(elapsedTimer)
+        elapsedTimer = null
+      }
       // 解析最终JSON
       try {
         const cleaned = stripCodeBlock(streamingText.value)
         finalTemplate.value = JSON.parse(cleaned)
         phase.value = 'result'
+        // 滚动到顶部
+        setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 100)
       } catch (e) {
+        console.error('JSON parse error:', e)
         errorMessage.value = 'AI输出格式异常，请重试'
         phase.value = 'error'
       }
     },
     onError: (detail, kind) => {
-      const friendly = mapErrorMessage(detail, kind)
-      errorMessage.value = friendly
+      if (elapsedTimer) {
+        clearInterval(elapsedTimer)
+        elapsedTimer = null
+      }
+      errorMessage.value = mapErrorMessage(detail, kind)
       phase.value = 'error'
     },
   })
@@ -127,6 +180,10 @@ const mapErrorMessage = (detail: string, kind: string): string => {
 
 const cancelGenerate = () => {
   if (abortFn) abortFn()
+  if (elapsedTimer) {
+    clearInterval(elapsedTimer)
+    elapsedTimer = null
+  }
   phase.value = 'input'
 }
 
@@ -136,14 +193,15 @@ const startOver = () => {
   finalTemplate.value = null
   errorMessage.value = ''
   phase.value = 'input'
+  setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 100)
 }
 
 const reuseTopic = () => {
-  // 保留当前topic，但回到输入态
   streamingText.value = ''
   finalTemplate.value = null
   errorMessage.value = ''
   phase.value = 'input'
+  setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 100)
 }
 
 // 历史
@@ -182,8 +240,15 @@ const reuseHistoryTopic = (topic: string) => {
   closeHistory()
 }
 
-// 显示流式生成的字数（让用户看到进度）
 const streamingCount = computed(() => streamingText.value.length)
+
+const progressPercent = computed(() => {
+  // 最快10秒完成,最慢70秒, 显示假进度让用户觉得动着
+  const sec = elapsedSeconds.value
+  const expected = 35  // 期望完成时间
+  const pct = Math.min(95, (sec / expected) * 100)
+  return Math.floor(pct)
+})
 </script>
 
 <template>
@@ -209,8 +274,26 @@ const streamingCount = computed(() => streamingText.value.length)
             说一句你想做的视频
           </h2>
           <p class="text-base text-gray-600">
-            比如"薏米红豆水祛湿"
+            比如"薏米红豆水祛湿"，AI给你写完整脚本
           </p>
+        </div>
+
+        <!-- 快捷主题按钮 -->
+        <div v-if="quickTopics.length > 0" class="bg-white rounded-2xl p-4 shadow-sm">
+          <div class="text-sm font-medium text-gray-700 mb-3">
+            🔥 不知道做啥？点一个直接开始
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <button
+              v-for="qt in quickTopics"
+              :key="qt.label"
+              class="flex items-center gap-2 px-3 py-3 bg-orange-50 hover:bg-orange-100 active:bg-orange-200 rounded-lg text-left transition-colors"
+              @click="selectQuickTopic(qt)"
+            >
+              <span class="text-2xl">{{ qt.emoji }}</span>
+              <span class="text-sm font-medium text-gray-800">{{ qt.label }}</span>
+            </button>
+          </div>
         </div>
 
         <!-- 录音按钮 -->
@@ -221,7 +304,7 @@ const streamingCount = computed(() => streamingText.value.length)
           />
         </div>
 
-        <!-- 文字输入（备选/编辑） -->
+        <!-- 文字输入 -->
         <div class="bg-white rounded-2xl p-4 shadow-sm">
           <label class="block text-sm font-medium text-gray-700 mb-2">
             或者直接输入主题（可编辑识别结果）：
@@ -231,8 +314,6 @@ const streamingCount = computed(() => streamingText.value.length)
             rows="3"
             placeholder="比如：薏米红豆水祛湿"
             class="w-full px-3 py-3 text-base border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent resize-none"
-            @focus="isInputFocused = true"
-            @blur="isInputFocused = false"
           />
           <div class="text-right text-xs text-gray-400 mt-1">
             {{ topicInput.length }} / 300
@@ -244,8 +325,9 @@ const streamingCount = computed(() => streamingText.value.length)
           <p class="text-red-700 text-sm">⚠️ {{ errorMessage }}</p>
         </div>
 
-        <!-- 生成按钮（粘性底部） -->
+        <!-- 生成按钮 -->
         <button
+          id="generate-btn"
           class="w-full py-4 rounded-xl text-white font-bold text-lg shadow-lg transition-all"
           :class="
             topicInput.trim()
@@ -259,33 +341,49 @@ const streamingCount = computed(() => streamingText.value.length)
         </button>
       </section>
 
-      <!-- 阶段2：生成中（流式） -->
+      <!-- 阶段2：生成中 -->
       <section v-if="phase === 'generating'" class="space-y-6">
         <div class="text-center pt-8">
-          <div class="inline-flex items-center justify-center w-16 h-16 bg-orange-100 rounded-full mb-4">
-            <span class="text-3xl animate-pulse">✍️</span>
+          <div class="inline-flex items-center justify-center w-20 h-20 bg-orange-100 rounded-full mb-4">
+            <span class="text-4xl animate-pulse">✍️</span>
           </div>
-          <h2 class="text-xl font-bold text-gray-900 mb-1">AI正在为你写脚本...</h2>
-          <p class="text-sm text-gray-500">
+          <h2 class="text-xl font-bold text-gray-900 mb-2">
+            {{ currentWaitingMsg }}
+          </h2>
+          <p class="text-sm text-gray-500 mb-1">
             主题：{{ topicInput }}
           </p>
-          <p class="text-xs text-gray-400 mt-2">
-            已生成 {{ streamingCount }} 字 ·
-            通常需要20-30秒
+          <p class="text-xs text-gray-400">
+            已用时 {{ elapsedSeconds }}秒 · 已生成 {{ streamingCount }} 字
           </p>
         </div>
 
-        <!-- 流式预览（让用户知道在工作） -->
-        <div class="bg-white rounded-xl p-4 shadow-sm border-2 border-orange-200">
-          <div class="text-xs text-gray-400 mb-2">实时生成内容（最终会整理成卡片）：</div>
-          <pre class="text-sm text-gray-700 whitespace-pre-wrap font-sans leading-relaxed max-h-96 overflow-y-auto">{{ streamingText || '正在连接...' }}</pre>
+        <!-- 进度条 -->
+        <div class="bg-white rounded-xl p-4 shadow-sm">
+          <div class="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
+            <div
+              class="h-full bg-gradient-to-r from-orange-400 to-orange-600 rounded-full transition-all duration-500 ease-out"
+              :style="`width: ${progressPercent}%`"
+            ></div>
+          </div>
+          <div class="text-xs text-gray-400 mt-2 text-center">
+            通常需要30-45秒，生成的脚本质量越高，等的越值得 ☕
+          </div>
         </div>
+
+        <!-- 流式预览 -->
+        <details class="bg-white rounded-xl p-4 shadow-sm border-2 border-orange-200">
+          <summary class="cursor-pointer text-sm text-gray-600 select-none">
+            点这里看AI正在写什么 →
+          </summary>
+          <pre class="mt-3 text-xs text-gray-600 whitespace-pre-wrap font-sans leading-relaxed max-h-64 overflow-y-auto">{{ streamingText || '正在连接...' }}</pre>
+        </details>
 
         <button
           class="w-full py-3 rounded-lg text-gray-700 bg-gray-100 hover:bg-gray-200 font-medium text-sm"
           @click="cancelGenerate"
         >
-          取消生成
+          取消
         </button>
       </section>
 
@@ -325,7 +423,7 @@ const streamingCount = computed(() => streamingText.value.length)
             <div v-if="historyLoading" class="text-center py-8 text-gray-500">加载中...</div>
             <div v-else-if="historyItems.length === 0" class="text-center py-8 text-gray-500">
               还没生成过脚本<br>
-              <span class="text-sm">关闭抽屉，按住按钮说一句开始第一条</span>
+              <span class="text-sm">关闭抽屉，点一个快捷主题开始第一条</span>
             </div>
             <ul v-else class="space-y-2">
               <li
